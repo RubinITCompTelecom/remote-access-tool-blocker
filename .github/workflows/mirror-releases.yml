@@ -1,14 +1,16 @@
-# Copies the NEWEST published release (notes + files) of pupontech/remote-access-tool-blocker onto the RubinITCompTelecom
-# mirror. mirror.yml pushes branches and tags only; GitHub Releases and their files are not part of a git push.
+# Copies the latest STABLE release and, when it is newer, the latest PRERELEASE (notes + files) of
+# pupontech/remote-access-tool-blocker onto the RubinITCompTelecom mirror. mirror.yml pushes branches and tags only;
+# GitHub Releases and their files are not part of a git push.
 #
 # This file lives in the SOURCE repo (like mirror.yml) so that mirror.yml carries it to the mirror, where it runs.
 # In the source repo the job is skipped. It uses the mirror's own GITHUB_TOKEN: no personal token, no extra secret.
 #
 # - Runs hourly, by hand, and when a tag arrives on the mirror.
-# - Only the newest non-draft release is copied (older ones stay on the source repo).
+# - Copies the newest non-draft stable release, plus the newest prerelease if it was published after that stable one
+#   (older releases stay on the source repo). rubinitcomptelecom.github.io shows both.
 # - Waits 10 minutes after a release is published, so its files are attached before it is copied.
-# - If the release already exists on the mirror it is brought up to date: title, notes, prerelease flag, missing files.
-name: Mirror latest release to RubinITCompTelecom
+# - If a release already exists on the mirror it is brought up to date: title, notes, prerelease flag, missing files.
+name: Mirror latest releases to RubinITCompTelecom
 
 on:
   schedule:
@@ -32,46 +34,55 @@ jobs:
       SRC: pupontech/remote-access-tool-blocker
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Copy the newest release
+      - name: Copy the latest stable release and any newer prerelease
         run: |
           set -euo pipefail
-          gh api "repos/$SRC/releases?per_page=10" > src.json
-          rel=$(jq -c '[.[] | select(.draft == false)][0]' src.json)
-          if [ "$rel" = "null" ]; then echo "No published release on $SRC"; exit 0; fi
-
-          tag=$(jq -r '.tag_name' <<<"$rel")
-          title=$(jq -r '.name // .tag_name' <<<"$rel")
-          pre=$(jq -r '.prerelease' <<<"$rel")
-          published=$(jq -r '.published_at' <<<"$rel")
-          jq -r '.body // ""' <<<"$rel" > notes.md
-
-          age=$(( $(date +%s) - $(date -d "$published" +%s) ))
-          if [ "$age" -lt 600 ]; then echo "$tag was published $age s ago; waiting for its files"; exit 0; fi
-
-          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag has not reached the mirror yet; trying again next run"; exit 0
+          gh api "repos/$SRC/releases?per_page=30" > src.json
+          stable=$(jq -c '[.[] | select(.draft == false and .prerelease == false)][0]' src.json)
+          pre=$(jq -c '[.[] | select(.draft == false and .prerelease == true)][0]' src.json)
+          picks=()
+          if [ "$stable" != "null" ]; then picks+=("$stable"); fi
+          if [ "$pre" != "null" ]; then
+            if [ "$stable" = "null" ] || [[ "$(jq -r '.published_at' <<<"$pre")" > "$(jq -r '.published_at' <<<"$stable")" ]]; then
+              picks+=("$pre")
+            fi
           fi
+          if [ ${#picks[@]} -eq 0 ]; then echo "No published release on $SRC"; exit 0; fi
 
-          mkdir -p dl
-          gh release download "$tag" --repo "$SRC" --dir dl || echo "No files on the source release"
+          for rel in "${picks[@]}"; do
+            tag=$(jq -r '.tag_name' <<<"$rel")
+            title=$(jq -r '.name // .tag_name' <<<"$rel")
+            pre_flag=$(jq -r '.prerelease' <<<"$rel")
+            published=$(jq -r '.published_at' <<<"$rel")
+            jq -r '.body // ""' <<<"$rel" > notes.md
 
-          flags=()
-          if [ "$pre" = "true" ]; then flags+=(--prerelease); fi
+            age=$(( $(date +%s) - $(date -d "$published" +%s) ))
+            if [ "$age" -lt 600 ]; then echo "$tag was published $age s ago; waiting for its files"; continue; fi
 
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag exists on the mirror: syncing title, notes and missing files"
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file notes.md --prerelease="$pre"
-            have=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-            for f in dl/*; do
-              [ -e "$f" ] || continue
-              if ! grep -qxF "$(basename "$f")" <<<"$have"; then
-                gh release upload "$tag" "$f" --repo "$GITHUB_REPOSITORY"
-              fi
-            done
-          else
-            echo "Creating release $tag on the mirror"
-            files=()
-            for f in dl/*; do [ -e "$f" ] && files+=("$f"); done
-            gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "$title" --notes-file notes.md "${flags[@]}"
-          fi
+            if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "Tag $tag has not reached the mirror yet; trying again next run"; continue
+            fi
+
+            rm -rf dl && mkdir -p dl
+            gh release download "$tag" --repo "$SRC" --dir dl || echo "No files on the source release $tag"
+
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $tag exists on the mirror: syncing title, notes and missing files"
+              gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file notes.md --prerelease="$pre_flag"
+              have=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+              for f in dl/*; do
+                [ -e "$f" ] || continue
+                if ! grep -qxF "$(basename "$f")" <<<"$have"; then
+                  gh release upload "$tag" "$f" --repo "$GITHUB_REPOSITORY"
+                fi
+              done
+            else
+              echo "Creating release $tag on the mirror"
+              files=()
+              for f in dl/*; do [ -e "$f" ] && files+=("$f"); done
+              flags=()
+              if [ "$pre_flag" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+              gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+                --title "$title" --notes-file notes.md "${flags[@]}"
+            fi
+          done
