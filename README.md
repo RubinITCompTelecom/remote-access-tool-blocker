@@ -2,6 +2,8 @@
 # vibe coded use at your own risk
 # Remote-access tool blocker (Windows App Control + optional ESET list)
 
+> Designed by [pupontech](https://github.com/pupontech) in collaboration with Rubin IT. A read-only mirror of this repository is kept at [RubinITCompTelecom/remote-access-tool-blocker](https://github.com/RubinITCompTelecom/remote-access-tool-blocker). Make changes in [pupontech/remote-access-tool-blocker](https://github.com/pupontech/remote-access-tool-blocker).
+
 Blocks the **legitimate remote-support tools that tech-support scammers abuse** — AnyDesk, TeamViewer,
 ScreenConnect, RustDesk, UltraViewer, Supremo, AeroAdmin and around fifty more — on ordinary Windows 10/11 PCs.
 
